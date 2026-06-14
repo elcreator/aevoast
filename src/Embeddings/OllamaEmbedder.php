@@ -1,0 +1,125 @@
+<?php
+
+namespace Elcreator\aEvoAST\Embeddings;
+
+class OllamaEmbedder
+{
+    private string $url;
+    private string $model;
+
+    public function __construct(string $url, string $model)
+    {
+        $this->url = rtrim($url, '/');
+        $this->model = $model;
+    }
+
+    /**
+     * Check if Ollama is reachable and the model is available.
+     */
+    public function isAvailable(): bool
+    {
+        try {
+            $ch = curl_init("{$this->url}/api/tags");
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => 5,
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if ($httpCode !== 200 || $response === false) {
+                return false;
+            }
+
+            $data = json_decode($response, true);
+            if (!isset($data['models'])) {
+                return false;
+            }
+
+            foreach ($data['models'] as $m) {
+                $name = $m['name'] ?? '';
+                // Match "nomic-embed-text" or "nomic-embed-text:latest"
+                if ($name === $this->model || str_starts_with($name, $this->model . ':')) {
+                    return true;
+                }
+            }
+
+            return false;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Embed a batch of text chunks.
+     *
+     * @param  string[]  $texts
+     * @return float[][] Array of embedding vectors
+     *
+     * @throws \RuntimeException
+     */
+    public function embedBatch(array $texts): array
+    {
+        if (empty($texts)) {
+            return [];
+        }
+
+        $payload = json_encode([
+            'model' => $this->model,
+            'input' => array_values($texts),
+        ]);
+
+        $ch = curl_init("{$this->url}/api/embed");
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $payload,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+            CURLOPT_TIMEOUT        => 120,
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($response === false) {
+            throw new \RuntimeException("Ollama request failed: {$error}");
+        }
+
+        if ($httpCode !== 200) {
+            throw new \RuntimeException("Ollama returned HTTP {$httpCode}: {$response}");
+        }
+
+        $data = json_decode($response, true);
+
+        if (!isset($data['embeddings'])) {
+            throw new \RuntimeException('Unexpected Ollama response: missing embeddings key');
+        }
+
+        return $data['embeddings'];
+    }
+
+    /**
+     * Embed a single text string.
+     *
+     * @return float[]
+     */
+    public function embed(string $text): array
+    {
+        $result = $this->embedBatch([$text]);
+        return $result[0];
+    }
+
+    public function getModel(): string
+    {
+        return $this->model;
+    }
+
+    public function getDimensions(): int
+    {
+        // nomic-embed-text produces 768-dimensional vectors
+        return 768;
+    }
+}
